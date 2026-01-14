@@ -1,0 +1,18 @@
+# Copy this file to terraform.tfvars and fill in your values
+# DO NOT commit terraform.tfvars to version control
+
+# Your Cloudflare Account ID (from dashboard)
+cloudflare_account_id = "your-account-id-here"
+
+# Your Cloudflare API token with Workers, R2, Pages, and DNS permissions
+cloudflare_api_token = "your-api-token-here"
+
+# Your Cloudflare Zone ID for the domain
+zone_id = null
+
+# Optional: Override defaults
+# domain              = "maven.kaf.sh"
+# r2_bucket_name      = "maven-kaf-sh-artifacts"
+# worker_name         = "maven-metadata-api"
+# pages_project_name  = "maven-repo-frontend"
+# production_branch   = "main"

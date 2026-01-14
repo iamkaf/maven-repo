@@ -1,0 +1,58 @@
+# Terraform
+infra/.terraform/
+infra/.terraform.lock.hcl
+infra/terraform.tfvars
+infra/terraform.tfstate
+infra/terraform.tfstate.backup
+infra/*.tfplan
+infra/*.tfstate.*
+
+# Cloudflare Wrangler
+worker/.wrangler/
+worker/node_modules/
+worker/dist/
+worker/.dev.vars
+
+# Frontend (Vite/React)
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# Credentials and secrets (everywhere)
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets/
+credentials/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/

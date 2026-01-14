@@ -1,0 +1,64 @@
+name: Apply Infrastructure
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'infra/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    name: Terraform Apply
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.6.0'
+
+      - name: Terraform Init
+        run: |
+          cd infra
+          terraform init
+        env:
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Terraform Validate
+        run: |
+          cd infra
+          terraform validate
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          cd infra
+          terraform plan -no-color -out=tfplan
+        env:
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          cd infra
+          terraform apply -auto-approve tfplan
+        env:
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Terraform Output
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          cd infra
+          terraform output -json
