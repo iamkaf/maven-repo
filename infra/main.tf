@@ -34,6 +34,13 @@ resource "cloudflare_workers_route" "api_routes" {
   script  = var.worker_name
 }
 
+# Worker route for /publish/* on z.kaf.sh
+resource "cloudflare_workers_route" "publish_routes" {
+  zone_id = var.zone_id
+  pattern = "${var.frontend_domain}/publish/*"
+  script  = var.worker_name
+}
+
 # ------------------------------------------------------------------------------
 # Cloudflare Pages for Frontend
 # ------------------------------------------------------------------------------

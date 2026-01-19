@@ -6,6 +6,8 @@ import { XMLParser } from 'fast-xml-parser';
 
 interface Env {
   R2: R2Bucket;
+  MAVEN_PUBLISH_USERNAME?: string;
+  MAVEN_PUBLISH_PASSWORD?: string;
 }
 
 interface ApiResponse<T> {
@@ -51,8 +53,61 @@ const errorResponse = (message: string, status: number = 400): Response => {
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Methods': 'GET, PUT, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+};
+
+// ----------------------------------------------------------------------------
+// Authentication
+// ----------------------------------------------------------------------------
+
+const validateBasicAuth = (request: Request, env: Env): boolean => {
+  const authHeader = request.headers.get('Authorization');
+
+  if (!authHeader || !authHeader.startsWith('Basic ')) {
+    return false;
+  }
+
+  const username = env.MAVEN_PUBLISH_USERNAME;
+  const password = env.MAVEN_PUBLISH_PASSWORD;
+
+  if (!username || !password) {
+    console.error('Auth credentials not configured');
+    return false;
+  }
+
+  // Decode Basic Auth header
+  const token = authHeader.substring(6);
+  const decoded = atob(token);
+  const [providedUsername, providedPassword] = decoded.split(':');
+
+  return providedUsername === username && providedPassword === password;
+};
+
+const unauthorizedResponse = (): Response => {
+  return new Response('Authentication required', {
+    status: 401,
+    headers: {
+      'WWW-Authenticate': 'Basic realm="Maven Repository"',
+      'Content-Type': 'text/plain',
+    },
+  });
+};
+
+// ----------------------------------------------------------------------------
+// Version Immutability Checker
+// ----------------------------------------------------------------------------
+
+const checkVersionExists = async (
+  groupPath: string,
+  artifactId: string,
+  version: string,
+  env: Env
+): Promise<boolean> => {
+  const prefix = `${groupPath}/${artifactId}/${version}/`;
+  const listed = await env.R2.list({ prefix, limit: 1 });
+
+  return listed.objects.length > 0;
 };
 
 // ----------------------------------------------------------------------------
@@ -248,11 +303,85 @@ const handleGetLatest = async (url: URL, env: Env): Promise<Response> => {
 };
 
 // ----------------------------------------------------------------------------
+// Publishing Handler
+// ----------------------------------------------------------------------------
+
+// PUT /publish/com/iamkaf/artifact/version/file.jar
+const handlePublishPut = async (
+  request: Request,
+  url: URL,
+  env: Env
+): Promise<Response> => {
+  // 1. Validate authentication
+  if (!validateBasicAuth(request, env)) {
+    return unauthorizedResponse();
+  }
+
+  // 2. Parse path: /publish/com/iamkaf/artifact/version/file.jar
+  const pathname = url.pathname;
+  if (!pathname.startsWith('/publish/')) {
+    return errorResponse('Invalid publish path', 400);
+  }
+
+  const mavenPath = pathname.substring('/publish/'.length);
+  const pathParts = mavenPath.split('/');
+
+  if (pathParts.length < 4) {
+    return errorResponse('Invalid Maven path format', 400);
+  }
+
+  // Extract coordinates from path
+  const versionIndex = pathParts.length - 2;
+  const fileName = pathParts[pathParts.length - 1];
+  const version = pathParts[versionIndex];
+  const artifactId = pathParts[versionIndex - 1];
+  const groupParts = pathParts.slice(0, versionIndex - 1);
+  const groupPath = groupParts.join('/');
+
+  // 3. Validate file extension
+  const validExtensions = ['.jar', '.pom', '.module', '.xml', '.sha1', '.sha256', '.asc'];
+  const hasValidExtension = validExtensions.some((ext) => fileName.endsWith(ext));
+
+  if (!hasValidExtension) {
+    return errorResponse('Invalid file type', 400);
+  }
+
+  // 4. Check version immutability (only for artifact files, not metadata or hash files)
+  if (!fileName.endsWith('.sha1') && !fileName.endsWith('.sha256') && !fileName.includes('maven-metadata')) {
+    const versionExists = await checkVersionExists(groupPath, artifactId, version, env);
+
+    if (versionExists) {
+      return new Response(`Version ${version} already exists`, {
+        status: 409,
+        headers: { 'Content-Type': 'text/plain' },
+      });
+    }
+  }
+
+  // 5. Get file content from request body
+  const fileContent = await request.arrayBuffer();
+
+  // 6. Construct R2 key
+  const r2Key = `${groupPath}/${artifactId}/${version}/${fileName}`;
+
+  // 7. Upload to R2
+  await env.R2.put(r2Key, fileContent);
+
+  // 8. Return success
+  console.log(`Uploaded: ${r2Key} (${fileContent.byteLength} bytes)`);
+
+  return new Response('OK', {
+    status: 200,
+    headers: { 'Content-Type': 'text/plain' },
+  });
+};
+
+// ----------------------------------------------------------------------------
 // Main Request Handler
 // ----------------------------------------------------------------------------
 
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
     // Handle CORS preflight
@@ -263,13 +392,21 @@ export default {
       });
     }
 
-    // Only allow GET requests
+    // Route handling
+    const path = url.pathname;
+
+    // Route: /publish/* for artifact uploads (PUT only)
+    if (path.startsWith('/publish/')) {
+      if (request.method !== 'PUT') {
+        return errorResponse('Method not allowed', 405);
+      }
+      return await handlePublishPut(request, url, env);
+    }
+
+    // Route: /api/* for metadata API (GET only)
     if (request.method !== 'GET') {
       return errorResponse('Method not allowed', 405);
     }
-
-    // Route handling
-    const path = url.pathname;
 
     try {
       if (path === '/api/groups') {

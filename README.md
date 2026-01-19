@@ -264,14 +264,57 @@ wrangler pages deploy dist --project-name=maven-repo-frontend
 
 ## Publishing Artifacts
 
-Artifacts are published from your library's CI pipeline.
+Artifacts can be published using **Gradle's maven-publish plugin** (recommended) or via **manual scripts**.
 
-### Prerequisites
+### Method 1: Gradle maven-publish Plugin (Recommended)
 
-1. **R2 Write Token** - From `terraform output r2_write_token`
-2. Add token as CI secret: `R2_WRITE_TOKEN`
+#### Prerequisites
 
-### Publishing Workflow
+1. **Configure Worker Secrets** (one-time setup):
+   ```bash
+   cd worker
+   wrangler secret put MAVEN_PUBLISH_USERNAME  # Enter: maven
+   wrangler secret put MAVEN_PUBLISH_PASSWORD  # Enter a strong password
+   ```
+
+2. **Add credentials** to your Gradle project's `~/.gradle/gradle.properties`:
+   ```properties
+   MAVEN_PUBLISH_USERNAME=maven
+   MAVEN_PUBLISH_PASSWORD=your-password-here
+   ```
+
+#### Gradle Configuration
+
+In your library's `build.gradle`:
+
+```groovy
+plugins {
+    id 'java'
+    id 'maven-publish'
+}
+
+publishing {
+    publications {
+        maven(MavenPublication) {
+            from components.java
+        }
+    }
+
+    repositories {
+        maven {
+            name = 'maven-kaf-sh'
+            url = 'https://z.kaf.sh/publish'
+
+            credentials {
+                username = System.getenv('MAVEN_PUBLISH_USERNAME')
+                password = System.getenv('MAVEN_PUBLISH_PASSWORD')
+            }
+        }
+    }
+}
+```
+
+#### CI/CD Example
 
 In your library's `.github/workflows/publish.yml`:
 
@@ -296,22 +339,33 @@ jobs:
 
       - name: Publish to Maven Repository
         env:
-          R2_WRITE_TOKEN: ${{ secrets.R2_WRITE_TOKEN }}
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_BUCKET_NAME: maven-kaf-sh-artifacts
-          GROUP_ID: com.iamkaf        # Your groupId
-          ARTIFACT_ID: your-artifact   # Your artifactId
-          VERSION: ${{ github.ref_name }}
-        run: |
-          ./gradlew publishToMavenLocal
-          ../maven-repo/scripts/publish-to-r2.sh "$GROUP_ID" "$ARTIFACT_ID" "$VERSION"
+          MAVEN_PUBLISH_USERNAME: maven
+          MAVEN_PUBLISH_PASSWORD: ${{ secrets.MAVEN_PUBLISH_PASSWORD }}
+        run: ./gradlew publish
 ```
 
-**Required CI Secrets:**
-- `R2_WRITE_TOKEN` - R2 API token with write access
-- `R2_ACCOUNT_ID` - Cloudflare Account ID
+**Required CI Secret:**
+- `MAVEN_PUBLISH_PASSWORD` - The password you set with `wrangler secret put`
 
-### Manual Publishing
+#### Publishing
+
+```bash
+# Publish from your Gradle project
+./gradlew publish
+```
+
+See [examples/gradle-publishing](./examples/gradle-publishing/) for a complete working example.
+
+---
+
+### Method 2: Manual Scripts (Legacy)
+
+#### Prerequisites
+
+1. **R2 Write Token** - From `terraform output r2_write_token`
+2. Add token as CI secret: `R2_WRITE_TOKEN`
+
+#### Publishing Workflow
 
 ```bash
 # From your library project
@@ -328,6 +382,8 @@ export R2_ACCOUNT_ID="your-account-id"
 
 ## API Endpoints
 
+### Public API (Read-Only)
+
 | Endpoint | Description |
 |----------|-------------|
 | `GET /api/groups` | List top-level groups |
@@ -335,6 +391,22 @@ export R2_ACCOUNT_ID="your-account-id"
 | `GET /api/versions?group=...&artifact=...` | List versions |
 | `GET /api/files?group=...&artifact=...&version=...` | List files for a version |
 | `GET /api/latest?group=...&artifact=...` | Get latest version |
+
+### Publishing Endpoint (Authenticated)
+
+| Endpoint | Authentication | Description |
+|----------|----------------|-------------|
+| `PUT /publish/*` | Basic Auth | Upload Maven artifacts |
+
+The `/publish/*` endpoint accepts PUT requests for Maven artifact files (.jar, .pom, .module, .xml, .sha1, .sha256, .asc) at the standard Maven path structure:
+```
+/publish/{group-path}/{artifact-id}/{version}/{filename}
+```
+
+Example:
+```
+PUT /publish/com/iamkaf/mylib/1.0.0/mylib-1.0.0.jar
+```
 
 ---
 
@@ -363,6 +435,8 @@ maven-repo/
 ├── scripts/            # Operational scripts
 │   ├── sync-to-r2.sh
 │   └── publish-to-r2.sh
+├── examples/           # Example projects
+│   └── gradle-publishing/  # Gradle publishing example
 ├── .github/
 │   └── workflows/      # CI/CD workflows
 └── SPEC.md             # Full specification
@@ -372,10 +446,24 @@ maven-repo/
 
 ## Environment Variables
 
+### Infrastructure
+
 | Variable | Purpose | Where |
 |----------|---------|-------|
 | `CLOUDFLARE_API_TOKEN` | Terraform auth | `infra/terraform.tfvars` |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account | `infra/terraform.tfvars` |
+
+### Publishing (Method 1: Gradle maven-publish)
+
+| Variable | Purpose | Where |
+|----------|---------|-------|
+| `MAVEN_PUBLISH_USERNAME` | Publish username | Worker secret (set via `wrangler secret put`) |
+| `MAVEN_PUBLISH_PASSWORD` | Publish password | Worker secret (set via `wrangler secret put`) |
+
+### Publishing (Method 2: Manual Scripts)
+
+| Variable | Purpose | Where |
+|----------|---------|-------|
 | `R2_WRITE_TOKEN` | Publishing to R2 | Library CI secrets |
 | `R2_ACCOUNT_ID` | Cloudflare account for R2 operations | Publishing scripts/CI |
 | `R2_BUCKET_NAME` | Target bucket | Publishing scripts |
@@ -407,6 +495,19 @@ terraform init -upgrade
 **"Error: version already exists"**
 - This is expected! Version immutability is enforced.
 - Bump the version number and try again.
+
+**Gradle: "401 Authentication required"**
+- Verify `MAVEN_PUBLISH_USERNAME` and `MAVEN_PUBLISH_PASSWORD` are set correctly
+- Check Worker secrets: `cd worker && wrangler secret list`
+- Ensure credentials are exported as environment variables or in `~/.gradle/gradle.properties`
+
+**Gradle: "409 Version already exists"**
+- Same as above - version immutability is enforced
+- Bump version and try again
+
+**Gradle: "404 Not found" when uploading**
+- Verify the Worker route is deployed: `terraform apply`
+- Check Worker is deployed: `wrangler deploy`
 
 ---
 
