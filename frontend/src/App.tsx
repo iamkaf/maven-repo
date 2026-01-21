@@ -851,7 +851,7 @@ function VersionPage() {
   if (error) return <ErrorMessage message={error.message} />;
 
   const groupPath = groupId?.replace(/\./g, '/');
-  const baseUrl = window.location.origin;
+  const repoUrl = 'https://maven.kaf.sh/';
 
   const formatFileSize = (bytes: number) => {
     if (bytes < 1024) return `${bytes} B`;
@@ -955,7 +955,7 @@ function VersionPage() {
                         </span>
                         <div className="min-w-0 flex-1">
                           <a
-                            href={`${baseUrl}/${groupPath}/${artifactId}/${version}/${file.name}`}
+                            href={`${repoUrl}${groupPath}/${artifactId}/${version}/${file.name}`}
                             className="text-text-primary group-hover:text-amber transition-colors font-mono text-sm block truncate"
                             download
                           >
@@ -967,7 +967,7 @@ function VersionPage() {
                         </div>
                       </div>
                       <a
-                        href={`${baseUrl}/${groupPath}/${artifactId}/${version}/${file.name}`}
+                        href={`${repoUrl}${groupPath}/${artifactId}/${version}/${file.name}`}
                         className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 border border-border text-sm font-medium rounded text-text-primary bg-surfaceHighlight hover:bg-border hover:border-amber/50 transition-all group-hover:border-amber/30"
                         download
                       >
