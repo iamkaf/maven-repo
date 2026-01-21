@@ -56,3 +56,7 @@ credentials/
 *.tmp
 *.temp
 .cache/
+
+# Example project
+examples/gradle-publishing/.gradle
+examples/gradle-publishing/build

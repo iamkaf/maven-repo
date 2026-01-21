@@ -1,13 +1,8 @@
-import { XMLParser, XMLBuilder } from 'fast-xml-parser';
+import { XMLParser } from 'fast-xml-parser';
 
 const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: '',
-});
-
-const builder = new XMLBuilder({
-  ignoreAttributes: false,
-  format: true,
 });
 
 // ----------------------------------------------------------------------------
@@ -51,11 +46,6 @@ interface MavenMetadata {
       };
     };
   };
-}
-
-interface SnapshotMetadata {
-  timestamp: string;      // Format: yyyyMMdd.HHmmss
-  buildNumber: number;    // Incremental integer
 }
 
 // ----------------------------------------------------------------------------
@@ -119,22 +109,6 @@ const unauthorizedResponse = (): Response => {
       'Content-Type': 'text/plain',
     },
   });
-};
-
-// ----------------------------------------------------------------------------
-// Version Immutability Checker
-// ----------------------------------------------------------------------------
-
-const checkVersionExists = async (
-  groupPath: string,
-  artifactId: string,
-  version: string,
-  env: Env
-): Promise<boolean> => {
-  const prefix = `${groupPath}/${artifactId}/${version}/`;
-  const listed = await env.R2.list({ prefix, limit: 1 });
-
-  return listed.objects.length > 0;
 };
 
 // ----------------------------------------------------------------------------
@@ -362,19 +336,21 @@ const handleReleasePut = async (
   const groupPath = groupParts.join('/');
 
   // 3. Validate file extension
-  const validExtensions = ['.jar', '.pom', '.module', '.xml', '.sha1', '.sha256', '.asc'];
+  const validExtensions = ['.jar', '.pom', '.module', '.xml', '.sha1', '.sha256', '.sha512', '.md5', '.asc'];
   const hasValidExtension = validExtensions.some((ext) => fileName.endsWith(ext));
 
   if (!hasValidExtension) {
     return errorResponse('Invalid file type', 400);
   }
 
-  // 4. Check version immutability (only for artifact files, not metadata or hash files)
-  if (!fileName.endsWith('.sha1') && !fileName.endsWith('.sha256') && !fileName.includes('maven-metadata')) {
-    const versionExists = await checkVersionExists(groupPath, artifactId, version, env);
+  // 4. Check file immutability (only for main artifact files, not hash files)
+  // Allow multiple files per version (jar, pom, sources, javadoc) but prevent overwriting
+  if (!fileName.endsWith('.sha1') && !fileName.endsWith('.sha256') && !fileName.endsWith('.sha512') && !fileName.endsWith('.md5') && !fileName.includes('maven-metadata')) {
+    const r2Key = `${groupPath}/${artifactId}/${version}/${fileName}`;
+    const existingFile = await env.R2.head(r2Key);
 
-    if (versionExists) {
-      return new Response(`Version ${version} already exists`, {
+    if (existingFile) {
+      return new Response(`File ${fileName} already exists`, {
         status: 409,
         headers: { 'Content-Type': 'text/plain' },
       });
@@ -423,215 +399,79 @@ const handleSnapshotPut = async (
   const mavenPath = pathname.substring('/snapshots/'.length);
   const pathParts = mavenPath.split('/');
 
-  if (pathParts.length < 4) {
+  if (pathParts.length < 3) {
     return errorResponse('Invalid path format', 400);
   }
 
   const fileName = pathParts[pathParts.length - 1];
+
+  // Handle artifact-level metadata (e.g., /snapshots/com/iamkaf/artifact/maven-metadata.xml)
+  if (pathParts.length === 3 && fileName === 'maven-metadata.xml') {
+    const artifactId = pathParts[pathParts.length - 2];
+    const groupParts = pathParts.slice(0, pathParts.length - 2);
+    const groupPath = groupParts.join('/');
+    const fileContent = await request.arrayBuffer();
+    const r2Key = `${groupPath}/${artifactId}/${fileName}`;
+    await env.R2.put(r2Key, fileContent);
+    return new Response('OK', {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain' },
+    });
+  }
+
+  // Handle version-level uploads (requires 4+ parts)
+  if (pathParts.length < 4) {
+    return errorResponse('Invalid path format', 400);
+  }
+
   const version = pathParts[pathParts.length - 2];
   const artifactId = pathParts[pathParts.length - 3];
   const groupParts = pathParts.slice(0, pathParts.length - 3);
   const groupPath = groupParts.join('/');
 
-  // 3. Validate version ends with -SNAPSHOT
-  if (!version.endsWith('-SNAPSHOT')) {
+  // 3. Validate version ends with -SNAPSHOT (except for maven-metadata.xml)
+  if (!version.endsWith('-SNAPSHOT') && !fileName.includes('maven-metadata')) {
     return errorResponse('Version must end with -SNAPSHOT', 400);
   }
 
-  // 4. Validate file type (same as releases)
-  const validExtensions = ['.jar', '.pom', '.module', '.xml', '.sha1', '.sha256', '.asc'];
-  const hasValidExtension = validExtensions.some((ext) => fileName.endsWith(ext));
-  if (!hasValidExtension) {
-    return errorResponse('Invalid file type', 400);
-  }
-
-  // 5. Extract base version (e.g., "1.0" from "1.0-SNAPSHOT")
-  const baseVersion = version.substring(0, version.length - '-SNAPSHOT'.length);
-
-  // 6. Generate or read snapshot metadata
-  const snapshotMetadata = await getOrGenerateSnapshotMetadata(
-    env,
-    groupPath,
-    artifactId,
-    version
-  );
-
-  // 7. Generate timestamped filename
-  const { baseFileName, extension } = parseFileName(fileName);
-  const timestampedFileName = `${baseFileName}-${baseVersion}-${snapshotMetadata.timestamp}-${snapshotMetadata.buildNumber}.${extension}`;
-
-  // 8. Upload to R2 with timestamped name
-  const r2Key = `${groupPath}/${artifactId}/${version}/${timestampedFileName}`;
+  // 4. Upload to R2 with the filename Gradle provided (trust Gradle's timestamping)
+  const r2Key = `${groupPath}/${artifactId}/${version}/${fileName}`;
   const fileContent = await request.arrayBuffer();
+
   await env.R2.put(r2Key, fileContent);
 
-  // 9. Update maven-metadata.xml
-  await updateSnapshotMetadata(
-    env,
-    groupPath,
-    artifactId,
-    version,
-    baseVersion,
-    snapshotMetadata,
-    extension
-  );
-
-  // 10. Return success with timestamped filename
-  console.log(`Uploaded snapshot: ${r2Key} (${fileContent.byteLength} bytes)`);
-
-  return new Response(JSON.stringify({
-    success: true,
-    file: timestampedFileName,
-    timestamp: snapshotMetadata.timestamp,
-    buildNumber: snapshotMetadata.buildNumber
-  }), {
+  return new Response('OK', {
     status: 200,
-    headers: { 'Content-Type': 'application/json' }
+    headers: { 'Content-Type': 'text/plain' },
   });
 };
 
-// ----------------------------------------------------------------------------
-// Snapshot Helper Functions
-// ----------------------------------------------------------------------------
+// GET /releases/* or /snapshots/* - Serve artifacts from R2
+async function handleArtifactGet(url: URL, env: Env): Promise<Response> {
+  const pathname = url.pathname;
+  const prefix = pathname.startsWith('/releases/') ? '/releases/' : '/snapshots/';
+  const mavenPath = pathname.substring(prefix.length);
 
-function parseFileName(fileName: string): { baseFileName: string; extension: string } {
-  const lastDotIndex = fileName.lastIndexOf('.');
-  if (lastDotIndex === -1) {
-    return { baseFileName: fileName, extension: '' };
-  }
-  return {
-    baseFileName: fileName.substring(0, lastDotIndex),
-    extension: fileName.substring(lastDotIndex + 1)
-  };
-}
+  const object = await env.R2.get(mavenPath);
 
-async function getOrGenerateSnapshotMetadata(
-  env: Env,
-  groupPath: string,
-  artifactId: string,
-  version: string
-): Promise<SnapshotMetadata> {
-  const metadataKey = `${groupPath}/${artifactId}/${version}/maven-metadata.xml`;
-
-  // Try to read existing metadata
-  const existing = await env.R2.get(metadataKey);
-
-  if (existing) {
-    const metadataText = await existing.text();
-    const parsed = parser.parse(metadataText) as MavenMetadata;
-
-    const existingTimestamp = parsed.metadata?.versioning?.snapshot?.timestamp;
-    const existingBuildNumber = parsed.metadata?.versioning?.snapshot?.buildNumber;
-
-    // Check if we need a new timestamp (new day or different version)
-    const now = new Date();
-    const newTimestamp = formatTimestamp(now);
-
-    if (existingTimestamp === newTimestamp) {
-      // Same day, increment build number
-      return {
-        timestamp: existingTimestamp,
-        buildNumber: (existingBuildNumber || 0) + 1
-      };
-    } else {
-      // New timestamp, reset build number to 1
-      return {
-        timestamp: newTimestamp,
-        buildNumber: 1
-      };
-    }
+  if (!object) {
+    return new Response('Not found', { status: 404 });
   }
 
-  // No existing metadata, generate initial
-  const now = new Date();
-  return {
-    timestamp: formatTimestamp(now),
-    buildNumber: 1
-  };
-}
+  const headers = new Headers();
+  const contentType = object.httpMetadata?.contentType;
 
-function formatTimestamp(date: Date): string {
-  const year = date.getUTCFullYear();
-  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(date.getUTCDate()).padStart(2, '0');
-  const hours = String(date.getUTCHours()).padStart(2, '0');
-  const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-  const seconds = String(date.getUTCSeconds()).padStart(2, '0');
-
-  return `${year}${month}${day}.${hours}${minutes}${seconds}`;
-}
-
-async function updateSnapshotMetadata(
-  env: Env,
-  groupPath: string,
-  artifactId: string,
-  version: string,
-  baseVersion: string,
-  snapshotMetadata: SnapshotMetadata,
-  extension: string
-): Promise<void> {
-  const metadataKey = `${groupPath}/${artifactId}/${version}/maven-metadata.xml`;
-
-  // Read existing metadata to preserve snapshotVersions
-  const existing = await env.R2.get(metadataKey);
-  let snapshotVersions: any[] = [];
-
-  if (existing) {
-    const metadataText = await existing.text();
-    const parsed = parser.parse(metadataText) as MavenMetadata;
-    const rawVersions = parsed.metadata?.versioning?.snapshotVersions?.snapshotVersion;
-    snapshotVersions = Array.isArray(rawVersions) ? rawVersions : (rawVersions ? [rawVersions] : []);
+  if (contentType) {
+    headers.set('Content-Type', contentType);
   }
 
-  // Add or update this file's snapshot version
-  const timestampedValue = `${baseVersion}-${snapshotMetadata.timestamp}-${snapshotMetadata.buildNumber}`;
-  const lastUpdated = formatTimestamp(new Date()).replace('.', '');
+  // Set cache headers for artifacts
+  headers.set('Cache-Control', 'public, max-age=3600');
 
-  const existingVersionIndex = snapshotVersions.findIndex(
-    (sv: any) => sv.extension === extension && sv.classifier === (extension === 'jar' ? undefined : extension)
-  );
-
-  if (existingVersionIndex >= 0) {
-    snapshotVersions[existingVersionIndex] = {
-      extension: extension,
-      value: timestampedValue,
-      updated: lastUpdated
-    };
-  } else {
-    snapshotVersions.push({
-      extension: extension,
-      value: timestampedValue,
-      updated: lastUpdated
-    });
-  }
-
-  // Build metadata XML
-  const metadata = {
-    metadata: {
-      groupId: groupPath.replace(/\//g, '.'),
-      artifactId: artifactId,
-      version: version,
-      versioning: {
-        snapshot: {
-          timestamp: snapshotMetadata.timestamp,
-          buildNumber: snapshotMetadata.buildNumber
-        },
-        lastUpdated: lastUpdated,
-        snapshotVersions: {
-          snapshotVersion: snapshotVersions
-        },
-        versions: {
-          version: snapshotVersions.map((sv: any) => sv.value)
-        },
-        latest: version,
-        release: version
-      }
-    }
-  };
-
-  // Convert to XML and upload
-  const xml = builder.build(metadata);
-  await env.R2.put(metadataKey, xml);
+  return new Response(object.body, {
+    status: 200,
+    headers,
+  });
 }
 
 // ----------------------------------------------------------------------------
@@ -653,20 +493,26 @@ export default {
     // Route handling
     const path = url.pathname;
 
-    // Route: /releases/* for immutable release uploads (PUT only)
+    // Route: /releases/* for release files (GET to read, PUT to upload)
     if (path.startsWith('/releases/')) {
-      if (request.method !== 'PUT') {
-        return errorResponse('Method not allowed', 405);
+      if (request.method === 'PUT') {
+        return await handleReleasePut(request, url, env);
       }
-      return await handleReleasePut(request, url, env);
+      if (request.method === 'GET') {
+        return await handleArtifactGet(url, env);
+      }
+      return errorResponse('Method not allowed', 405);
     }
 
-    // Route: /snapshots/* for mutable snapshot uploads (PUT only)
+    // Route: /snapshots/* for snapshot files (GET to read, PUT to upload)
     if (path.startsWith('/snapshots/')) {
-      if (request.method !== 'PUT') {
-        return errorResponse('Method not allowed', 405);
+      if (request.method === 'PUT') {
+        return await handleSnapshotPut(request, url, env);
       }
-      return await handleSnapshotPut(request, url, env);
+      if (request.method === 'GET') {
+        return await handleArtifactGet(url, env);
+      }
+      return errorResponse('Method not allowed', 405);
     }
 
     // Route: /api/* for metadata API (GET only)
