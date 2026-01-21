@@ -44,7 +44,10 @@ publishing {
     repositories {
         maven {
             name = 'maven-kaf-sh'
-            url = 'https://z.kaf.sh/publish'
+            // Use /releases for release versions, /snapshots for snapshot versions
+            url = project.version.endsWith('-SNAPSHOT')
+                ? 'https://z.kaf.sh/snapshots'
+                : 'https://z.kaf.sh/releases'
 
             credentials {
                 username = System.getenv('MAVEN_PUBLISH_USERNAME')

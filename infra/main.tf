@@ -34,10 +34,17 @@ resource "cloudflare_workers_route" "api_routes" {
   script  = var.worker_name
 }
 
-# Worker route for /publish/* on z.kaf.sh
-resource "cloudflare_workers_route" "publish_routes" {
+# Worker route for /releases/* on z.kaf.sh
+resource "cloudflare_workers_route" "releases_route" {
   zone_id = var.zone_id
-  pattern = "${var.frontend_domain}/publish/*"
+  pattern = "${var.frontend_domain}/releases/*"
+  script  = var.worker_name
+}
+
+# Worker route for /snapshots/* on z.kaf.sh
+resource "cloudflare_workers_route" "snapshots_route" {
+  zone_id = var.zone_id
+  pattern = "${var.frontend_domain}/snapshots/*"
   script  = var.worker_name
 }
 

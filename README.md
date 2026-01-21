@@ -303,7 +303,10 @@ publishing {
     repositories {
         maven {
             name = 'maven-kaf-sh'
-            url = 'https://z.kaf.sh/publish'
+            // Use /releases for release versions, /snapshots for snapshot versions
+            url = project.version.endsWith('-SNAPSHOT')
+                ? 'https://z.kaf.sh/snapshots'
+                : 'https://z.kaf.sh/releases'
 
             credentials {
                 username = System.getenv('MAVEN_PUBLISH_USERNAME')
@@ -392,20 +395,33 @@ export R2_ACCOUNT_ID="your-account-id"
 | `GET /api/files?group=...&artifact=...&version=...` | List files for a version |
 | `GET /api/latest?group=...&artifact=...` | Get latest version |
 
-### Publishing Endpoint (Authenticated)
+### Publishing Endpoints (Authenticated)
 
 | Endpoint | Authentication | Description |
 |----------|----------------|-------------|
-| `PUT /publish/*` | Basic Auth | Upload Maven artifacts |
+| `PUT /releases/*` | Basic Auth | Upload release artifacts (immutable) |
+| `PUT /snapshots/*` | Basic Auth | Upload snapshot artifacts (mutable with timestamps) |
 
-The `/publish/*` endpoint accepts PUT requests for Maven artifact files (.jar, .pom, .module, .xml, .sha1, .sha256, .asc) at the standard Maven path structure:
-```
-/publish/{group-path}/{artifact-id}/{version}/{filename}
-```
+**Releases (`/releases/*`):**
+- For immutable release versions
+- Accepts PUT requests for Maven artifact files (.jar, .pom, .module, .xml, .sha1, .sha256, .asc)
+- Path structure: `/releases/{group-path}/{artifact-id}/{version}/{filename}`
+- Existing versions cannot be overwritten (returns 409)
 
 Example:
 ```
-PUT /publish/com/iamkaf/mylib/1.0.0/mylib-1.0.0.jar
+PUT /releases/com/iamkaf/mylib/1.0.0/mylib-1.0.0.jar
+```
+
+**Snapshots (`/snapshots/*`):**
+- For mutable snapshot versions (version must end with `-SNAPSHOT`)
+- Automatically generates timestamped filenames (e.g., `mylib-1.0-20250121.143052-1.jar`)
+- Auto-generates `maven-metadata.xml` with snapshot information
+- Path structure: `/snapshots/{group-path}/{artifact-id}/{version}-SNAPSHOT/{filename}`
+
+Example:
+```
+PUT /snapshots/com/iamkaf/mylib/1.0-SNAPSHOT/mylib-1.0-SNAPSHOT.jar
 ```
 
 ---
