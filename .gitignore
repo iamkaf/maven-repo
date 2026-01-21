@@ -60,3 +60,4 @@ credentials/
 # Example project
 examples/gradle-publishing/.gradle
 examples/gradle-publishing/build
+examples/gradle-publishing/bin
