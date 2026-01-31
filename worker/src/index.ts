@@ -290,7 +290,7 @@ const handleGetLatest = async (url: URL, env: Env): Promise<Response> => {
   const parsed = parseMavenMetadata(xml);
 
   const latest = parsed?.metadata?.versioning?.latest ||
-                parsed?.metadata?.versioning?.release;
+    parsed?.metadata?.versioning?.release;
 
   if (!latest) {
     return errorResponse('Could not determine latest version', 500);
@@ -475,6 +475,73 @@ async function handleArtifactGet(url: URL, env: Env): Promise<Response> {
 }
 
 // ----------------------------------------------------------------------------
+// Purge Handler
+// ----------------------------------------------------------------------------
+
+async function handlePurge(request: Request, url: URL, env: Env): Promise<Response> {
+  // 1. Authenticate
+  if (!validateBasicAuth(request, env)) {
+    return unauthorizedResponse();
+  }
+
+  // 2. Parse input
+  const prefix = url.searchParams.get('prefix');
+  if (!prefix) {
+    return errorResponse('Missing prefix parameter', 400);
+  }
+
+  // Input validation: ensure it looks like a group.artifact string
+  // It shouldn't contain slashes usually, but we want to be somewhat flexible yet safe.
+  // The requirement says: "com.iamkaf.explodingsheep" -> "com/iamkaf/explodingsheep"
+  // Let's just replace dots with slashes.
+  const pathPrefix = prefix.replace(/\./g, '/');
+
+  if (pathPrefix.length < 3) { // minimal sanity check
+    return errorResponse('Prefix too short', 400);
+  }
+
+  const deletedKeys: string[] = [];
+  const errors: string[] = [];
+
+  // 3. Define roots to purge
+  const roots = ['releases', 'snapshots'];
+
+  for (const root of roots) {
+    const fullPrefix = `${root}/${pathPrefix}/`;
+
+    try {
+      let truncated = true;
+      let cursor: string | undefined;
+
+      while (truncated) {
+        const list: R2Objects = await env.R2.list({
+          prefix: fullPrefix,
+          cursor: cursor,
+        });
+
+        if (list.objects.length > 0) {
+          const keysToDelete = list.objects.map((o) => o.key);
+          await env.R2.delete(keysToDelete);
+          deletedKeys.push(...keysToDelete);
+        }
+
+        truncated = list.truncated;
+        cursor = list.truncated ? list.cursor : undefined;
+      }
+    } catch (e: any) {
+      console.error(`Error purging ${fullPrefix}:`, e);
+      errors.push(`Failed to purge ${fullPrefix}: ${e.message}`);
+    }
+  }
+
+  return jsonResponse({
+    success: errors.length === 0,
+    deleted: deletedKeys,
+    errors: errors.length > 0 ? errors : undefined
+  });
+}
+
+// ----------------------------------------------------------------------------
 // Main Request Handler
 // ----------------------------------------------------------------------------
 
@@ -511,6 +578,14 @@ export default {
       }
       if (request.method === 'GET') {
         return await handleArtifactGet(url, env);
+      }
+      return errorResponse('Method not allowed', 405);
+    }
+
+    // Route: /api/purge (DELETE)
+    if (path === '/api/purge') {
+      if (request.method === 'DELETE') {
+        return await handlePurge(request, url, env);
       }
       return errorResponse('Method not allowed', 405);
     }
